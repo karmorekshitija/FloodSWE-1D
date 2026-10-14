@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
 FloodSWE-1D: 1D Saint-Venant Shallow-Water Equations (SWE) Finite-Volume Solver,
-Ritter Dam-Break Verification, Manning Roughness Inverse Calibration & IPCC SSP5-8.5
-Urban Detention-Basin Flood Attenuation Optimizer
+Stoker Dam-Break Verification, Manning Roughness Inverse Calibration & Synthetic
+Urban Storm Detention-Basin Scenario
 ====================================================================================
 Author: Kshitija Karmore (B.Tech Civil Engineering, IIT Delhi)
 Course Grounding:
   - CVL2702 (Hydraulics: Open-Channel Flow, Saint-Venant Equations, Manning Resistance)
   - CVL2001 (Climate Change and Adaptation: Extreme Monsoon IDF Surge & Detention Design)
-Paper Reproductions:
-  1. Toro, E. F. (2001), "Shock-Capturing Methods for Free-Surface Shallow Flows",
-     Wiley (Rusanov / Local Lax-Friedrichs Finite-Volume Solver & Ritter Exact Solution).
-  2. Kratzert, F., et al. (2018), "Rainfall-runoff modelling using Long Short-Term
-     Memory (LSTM) networks", Hydrology and Earth System Sciences (HESS), 22, 6005-6022
-     (Physics-Guided State-Space Hydrograph Surrogate with NSE & KGE Verification).
+Reference grounding:
+  - Toro, E. F. (2001), "Shock-Capturing Methods for Free-Surface Shallow Flows",
+    Wiley (finite-volume methods and analytical dam-break benchmarks).
+
+The rainfall-runoff and detention component is a synthetic scenario. It does not use
+observed rainfall, an IPCC projection, or the LSTM architecture of Kratzert et al. (2018).
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import math
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
+from roughness_study import solve_profile
 
 G_ACCEL = 9.81  # m/s^2
 
@@ -60,16 +61,25 @@ def run_saint_venant_dambreak_verification(
     t_end_s: float = 30.0,
     h_left: float = 4.0,
     h_right: float = 0.40,
+    target_cfl: float = 0.45,
 ) -> Dict[str, object]:
     """
     Solves the 1D conservative Saint-Venant Shallow-Water Equations (SWE):
         d/dt [h, h*u]^T + d/dx [h*u, h*u^2 + 0.5*g*h^2]^T = [0, g*h*(S0 - Sf)]^T
     using the Rusanov / HLL 1st-Order Finite-Volume Upwind Scheme on a wet-bed Stoker
     dam-break benchmark (h_L = 4.0m, h_R = 0.40m) and verifies:
-      1. Exact water volume conservation (0.00e+00 m^3/m mass error)
+      1. Water-volume conservation
       2. CFL stability condition (CFL <= 1.00)
       3. Stoker analytical shock + rarefaction depth L2 accuracy (< 2.5% L2 error)
     """
+    if not isinstance(num_cells, int) or isinstance(num_cells, bool) or num_cells < 4:
+        raise ValueError("num_cells must be an integer >= 4")
+    if not all(math.isfinite(value) and value > 0 for value in (length_m, t_end_s, h_left, h_right)):
+        raise ValueError("Finite positive length, time and wet-bed depths are required")
+    if h_left < h_right or h_right < 1e-6:
+        raise ValueError("Supported regime: h_left >= h_right >= 1e-6 m; no dry-bed solver")
+    if not math.isfinite(target_cfl) or not 0 < target_cfl <= 0.5:
+        raise ValueError("target_cfl must lie in (0, 0.5]")
     dx = length_m / num_cells
     x_centers = [(i + 0.5) * dx for i in range(num_cells)]
     x_gate = length_m / 2.0
@@ -79,15 +89,21 @@ def run_saint_venant_dambreak_verification(
 
     initial_volume = sum(h) * dx
     t = 0.0
-    dt = 0.15  # s (CFL ~ 0.64 on dx = 2.0m)
-    steps = int(round(t_end_s / dt))
+    steps = 0
+    net_boundary_volume = 0.0
+    min_dt = math.inf
+    max_dt = 0.0
     max_cfl_seen = 0.0
 
-    for _ in range(steps):
+    while t < t_end_s:
         # Compute primitive velocities and wave speeds
         u = [hu[i] / h[i] if h[i] > 1e-7 else 0.0 for i in range(num_cells)]
         c = [math.sqrt(G_ACCEL * max(0.0, h[i])) for i in range(num_cells)]
         max_wave = max(abs(u[i]) + c[i] for i in range(num_cells))
+        dt = min(target_cfl * dx / max_wave, t_end_s - t)
+        min_dt = min(min_dt, dt)
+        max_dt = max(max_dt, dt)
+        steps += 1
         cfl = max_wave * dt / dx
         if cfl > max_cfl_seen:
             max_cfl_seen = cfl
@@ -111,34 +127,35 @@ def run_saint_venant_dambreak_verification(
             F1_int[i + 1] = 0.5 * (f1[i] + f1[i + 1]) - 0.5 * s_max * (h[i + 1] - h[i])
             F2_int[i + 1] = 0.5 * (f2[i] + f2[i + 1]) - 0.5 * s_max * (hu[i + 1] - hu[i])
 
-        # Conservative finite-volume update
+        net_boundary_volume += dt * (F1_int[0] - F1_int[-1])
         for i in range(num_cells):
             h[i] -= (dt / dx) * (F1_int[i + 1] - F1_int[i])
             hu[i] -= (dt / dx) * (F2_int[i + 1] - F2_int[i])
+        if any(not math.isfinite(depth) or depth <= 0 for depth in h):
+            raise ArithmeticError("Wet-bed positivity failed; no clipping applied")
 
         t += dt
 
     final_volume = sum(h) * dx
-    vol_err = abs(final_volume - initial_volume)
+    vol_err = abs(final_volume - initial_volume - net_boundary_volume)
 
     # Exact Stoker (1957) dam-break solution for h_L = 4.0m, h_R = 0.40m at t = 30.0s
     c_L = math.sqrt(G_ACCEL * h_left)
-    h_star = 0.5 * (h_left + h_right)
-    for _ in range(30):
+    lower_depth, upper_depth = h_right, h_left
+    for _ in range(80):
+        h_star = 0.5 * (lower_depth + upper_depth)
         c_star = math.sqrt(G_ACCEL * h_star)
         u_raref = 2.0 * (c_L - c_star)
         u_shock = (h_star - h_right) * math.sqrt(0.5 * G_ACCEL * (1.0 / h_star + 1.0 / h_right))
         res = u_raref - u_shock
-        eps = 1e-6
-        h_p = h_star + eps
-        res_p = 2.0 * (c_L - math.sqrt(G_ACCEL * h_p)) - (h_p - h_right) * math.sqrt(
-            0.5 * G_ACCEL * (1.0 / h_p + 1.0 / h_right)
-        )
-        h_star -= res / ((res_p - res) / eps)
+        if res > 0:
+            lower_depth = h_star
+        else:
+            upper_depth = h_star
 
     c_star = math.sqrt(G_ACCEL * h_star)
     u_star = 2.0 * (c_L - c_star)
-    shock_speed = (h_star * u_star) / (h_star - h_right)
+    shock_speed = math.sqrt(0.5 * G_ACCEL * h_star * (h_star + h_right) / h_right)
 
     h_exact: List[float] = []
     for x in x_centers:
@@ -157,11 +174,29 @@ def run_saint_venant_dambreak_verification(
     norm_sq = sum(he ** 2 for he in h_exact)
     l2_depth_err_pct = math.sqrt(err_sq / norm_sq) * 100.0
 
+    search_start = next(i for i, x in enumerate(x_centers) if x >= x_gate)
+    shock_interface = min(
+        range(search_start, num_cells - 1),
+        key=lambda i: h[i + 1] - h[i],
+    )
+    numerical_shock_x = 0.5 * (x_centers[shock_interface] + x_centers[shock_interface + 1])
+    numerical_shock_speed = (numerical_shock_x - x_gate) / t_end_s
+    shock_speed_error_pct = abs(numerical_shock_speed - shock_speed) / shock_speed * 100.0
+
     return {
         "channel_length_m": length_m,
         "num_cells": num_cells,
         "dx_m": dx,
         "dt_s": dt,
+        "min_dt_s": min_dt,
+        "max_dt_s": max_dt,
+        "num_steps": steps,
+        "target_cfl": target_cfl,
+        "minimum_depth_m": min(h),
+        "net_boundary_volume_m3_per_m": net_boundary_volume,
+        "raw_volume_change_m3_per_m": final_volume - initial_volume,
+        "exact_profile_valid_before_boundary_interaction": t_end_s * max(c_L, shock_speed) < length_m / 2,
+        "shock_diagnostic_applicable": h_left > h_right and t_end_s * shock_speed < length_m / 2,
         "simulation_time_s": t_end_s,
         "max_cfl_number": round(max_cfl_seen, 4),
         "initial_water_volume_m3_per_m": round(initial_volume, 4),
@@ -169,11 +204,29 @@ def run_saint_venant_dambreak_verification(
         "volume_conservation_error_m3_per_m": vol_err,
         "stoker_star_depth_m": round(h_star, 4),
         "stoker_shock_speed_m_per_s": round(shock_speed, 4),
+        "numerical_shock_speed_m_per_s": round(numerical_shock_speed, 4),
+        "shock_speed_relative_error_pct": round(shock_speed_error_pct, 3),
         "l2_depth_error_vs_stoker_pct": round(l2_depth_err_pct, 3),
         "x_centers_m": [round(x, 2) for x in x_centers],
         "h_numerical_m": [round(val, 4) for val in h],
         "h_exact_m": [round(val, 4) for val in h_exact],
     }
+
+
+def run_grid_convergence_study() -> List[Dict[str, float]]:
+    results: List[Dict[str, float]] = []
+    for num_cells in (125, 250, 500):
+        run = run_saint_venant_dambreak_verification(num_cells=num_cells)
+        results.append(
+            {
+                "num_cells": num_cells,
+                "dx_m": float(run["dx_m"]),
+                "l2_depth_error_pct": float(run["l2_depth_error_vs_stoker_pct"]),
+                "shock_speed_relative_error_pct": float(run["shock_speed_relative_error_pct"]),
+                "max_cfl_number": float(run["max_cfl_number"]),
+            }
+        )
+    return results
 
 
 # ==============================================================================
@@ -185,7 +238,7 @@ def run_manning_gvf_and_inverse_calibration() -> Dict[str, float]:
     Solves the Gradually Varied Flow (GVF) M1 backwater profile in a rectangular
     lined urban drainage channel (width B = 8.0m, bed slope S0 = 0.0012, discharge Q = 42.0 m^3/s)
     using 4th-Order Runge-Kutta integration of dy/dx = (S0 - Sf(y)) / (1 - Fr(y)^2),
-    and calibrates unknown Manning roughness n from 10 noisy depth-gauge observations.
+    and recovers Manning roughness n from 10 synthetic perturbed depth observations.
     """
     B = 8.0
     S0 = 0.0012
@@ -197,25 +250,7 @@ def run_manning_gvf_and_inverse_calibration() -> Dict[str, float]:
     y_downstream = 2.60
 
     def solve_m1_profile(n_val: float) -> List[float]:
-        y = y_downstream
-        profile = [y]
-        for _ in range(N_steps):
-            def dydx(depth: float) -> float:
-                A = B * depth
-                P = B + 2.0 * depth
-                R = A / P
-                V = Q / A
-                Sf = (n_val ** 2) * (V ** 2) / (R ** (4.0 / 3.0))
-                Fr2 = (V ** 2) / (G_ACCEL * depth)
-                return (S0 - Sf) / max(0.05, 1.0 - Fr2)
-
-            k1 = dydx(y)
-            k2 = dydx(y + 0.5 * dx * k1)
-            k3 = dydx(y + 0.5 * dx * k2)
-            k4 = dydx(y + dx * k3)
-            y += (dx / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-            profile.append(y)
-        return profile
+        return solve_profile(n_val, steps=N_steps, slope=S0, discharge=Q, width=B, length=L_reach, downstream_depth=y_downstream)
 
     y_true_profile = solve_m1_profile(n_true)
 
@@ -255,16 +290,20 @@ def run_manning_gvf_and_inverse_calibration() -> Dict[str, float]:
         "calibrated_manning_n": round(n_calibrated, 6),
         "manning_n_relative_error_pct": round(n_rel_err_pct, 3),
         "profile_rmse_mm": round(rmse_mm, 3),
+        "profile_rmse_definition": "Error against synthetic true profile, not observation fit",
+        "observation_fit_rmse_mm": 1000 * math.sqrt(sum((y_cal_profile[index]-observed)**2 for index, observed in zip(gauge_indices, y_obs)) / len(y_obs)),
         "upstream_depth_m": round(y_true_profile[-1], 4),
         "downstream_depth_m": y_downstream,
     }
 
 
 # ==============================================================================
-# PART 3: RAINFALL-RUNOFF SURROGATE (NSE/KGE) & IPCC SSP5-8.5 DETENTION OPTIMIZER
+# PART 3: SYNTHETIC RAINFALL-RUNOFF SURROGATE & DETENTION SCENARIO
 # ==============================================================================
 
-def run_climate_flood_hydrograph_and_detention_optimizer() -> Dict[str, float]:
+def run_synthetic_storm_and_detention_scenario(n_sub: int = 12) -> Dict[str, float]:
+    if not isinstance(n_sub, int) or n_sub < 1:
+        raise ValueError("Routing substeps must be a positive integer")
     dt_hr = 0.10  # 6-minute time step over 24 hours (240 steps)
     n_steps = 240
     area_km2 = 18.5
@@ -277,7 +316,7 @@ def run_climate_flood_hydrograph_and_detention_optimizer() -> Dict[str, float]:
         pulse2 = 24.0 * math.exp(-0.5 * ((t_hr - 11.0) / 1.8) ** 2)
         rain_hist.append(pulse1 + pulse2)
 
-    rain_ssp585 = [r * 1.35 for r in rain_hist]
+    rain_stress = [r * 1.35 for r in rain_hist]
 
     def simulate_nonlinear_catchment(rain_mm_hr: List[float]) -> List[float]:
         s1, s2, s3 = 0.0, 0.0, 0.0
@@ -296,7 +335,7 @@ def run_climate_flood_hydrograph_and_detention_optimizer() -> Dict[str, float]:
         return q_out
 
     q_obs_hist = simulate_nonlinear_catchment(rain_hist)
-    q_inflow_ssp585 = simulate_nonlinear_catchment(rain_ssp585)
+    q_inflow_stress = simulate_nonlinear_catchment(rain_stress)
 
     def build_recurrent_features(rain_mm_hr: List[float]) -> List[List[float]]:
         s1, s2, s3 = 0.0, 0.0, 0.0
@@ -337,24 +376,23 @@ def run_climate_flood_hydrograph_and_detention_optimizer() -> Dict[str, float]:
     for i in range(p - 1, -1, -1):
         w_surr[i] = (M[i][p] - sum(M[i][j] * w_surr[j] for j in range(i + 1, p))) / M[i][i]
 
-    X_test = build_recurrent_features(rain_ssp585)
-    q_pred_ssp585 = [sum(w_surr[j] * row[j] for j in range(p)) for row in X_test]
+    X_test = build_recurrent_features(rain_stress)
+    q_pred_stress = [sum(w_surr[j] * row[j] for j in range(p)) for row in X_test]
 
-    mean_obs = sum(q_inflow_ssp585) / n_steps
-    mean_pred = sum(q_pred_ssp585) / n_steps
-    ss_res = sum((qo - qp) ** 2 for qo, qp in zip(q_inflow_ssp585, q_pred_ssp585))
-    ss_tot = sum((qo - mean_obs) ** 2 for qo in q_inflow_ssp585)
+    mean_obs = sum(q_inflow_stress) / n_steps
+    mean_pred = sum(q_pred_stress) / n_steps
+    ss_res = sum((qo - qp) ** 2 for qo, qp in zip(q_inflow_stress, q_pred_stress))
+    ss_tot = sum((qo - mean_obs) ** 2 for qo in q_inflow_stress)
     nse = 1.0 - (ss_res / ss_tot)
 
     std_obs = math.sqrt(ss_tot / n_steps)
-    std_pred = math.sqrt(sum((qp - mean_pred) ** 2 for qp in q_pred_ssp585) / n_steps)
-    cov_op = sum((qo - mean_obs) * (qp - mean_pred) for qo, qp in zip(q_inflow_ssp585, q_pred_ssp585)) / n_steps
+    std_pred = math.sqrt(sum((qp - mean_pred) ** 2 for qp in q_pred_stress) / n_steps)
+    cov_op = sum((qo - mean_obs) * (qp - mean_pred) for qo, qp in zip(q_inflow_stress, q_pred_stress)) / n_steps
     r_corr = cov_op / (std_obs * std_pred)
     alpha_kge = std_pred / std_obs
     beta_kge = mean_pred / mean_obs
     kge = 1.0 - math.sqrt((r_corr - 1.0) ** 2 + (alpha_kge - 1.0) ** 2 + (beta_kge - 1.0) ** 2)
 
-    # Regional Urban Detention Basin Routing (Modified Puls Level-Pool Routing, CVL2702 + CVL2001):
     # Basin footprint A_basin = 420,000 m^2 (42 ha), spillway crest H_spillway = 4.60 m,
     # 6 parallel box-culvert orifices of diameter D_opt = 1.45 m
     A_basin = 420000.0
@@ -364,12 +402,14 @@ def run_climate_flood_hydrograph_and_detention_optimizer() -> Dict[str, float]:
     A_orifice = math.pi * (D_opt ** 2) / 4.0
 
     h_basin = 0.10
+    initial_storage = h_basin*A_basin
+    total_inflow_volume = 0.0
+    total_outflow_volume = 0.0
     q_routed: List[float] = []
     max_basin_depth = 0.0
     dt_sec = dt_hr * 3600.0
 
-    for q_in in q_inflow_ssp585:
-        n_sub = 12
+    for q_in in q_inflow_stress:
         dt_sub = dt_sec / n_sub
         q_out_step = 0.0
         for _ in range(n_sub):
@@ -383,24 +423,35 @@ def run_climate_flood_hydrograph_and_detention_optimizer() -> Dict[str, float]:
             q1 = q_discharge(h_basin)
             h_mid = max(0.0, h_basin + 0.5 * dt_sub * (q_in - q1) / A_basin)
             q2 = q_discharge(h_mid)
-            h_basin = max(0.0, h_basin + dt_sub * (q_in - q2) / A_basin)
+            q2 = min(q2, q_in+h_basin*A_basin/dt_sub)
+            total_inflow_volume += q_in*dt_sub
+            total_outflow_volume += q2*dt_sub
+            h_basin += dt_sub * (q_in - q2) / A_basin
             q_out_step = q2
             if h_basin > max_basin_depth:
                 max_basin_depth = h_basin
         q_routed.append(q_out_step)
 
     peak_hist = max(q_obs_hist)
-    peak_ssp585_unmitigated = max(q_inflow_ssp585)
-    peak_ssp585_routed = max(q_routed)
+    peak_stress_unmitigated = max(q_inflow_stress)
+    peak_stress_routed = max(q_routed)
     peak_attenuation_pct = (
-        (peak_ssp585_unmitigated - peak_ssp585_routed) / peak_ssp585_unmitigated * 100.0
+        (peak_stress_unmitigated - peak_stress_routed) / peak_stress_unmitigated * 100.0
     )
 
     return {
         "catchment_area_km2": area_km2,
+        "routing_method": "Explicit midpoint RK2 with availability-limited outflow; not Modified Puls",
+        "routing_substeps": n_sub,
+        "initial_storage_m3": initial_storage,
+        "final_storage_m3": h_basin*A_basin,
+        "inflow_volume_m3": total_inflow_volume,
+        "outflow_volume_m3": total_outflow_volume,
+        "storage_balance_error_m3": abs(initial_storage+total_inflow_volume-total_outflow_volume-h_basin*A_basin),
         "historical_peak_discharge_m3_per_s": round(peak_hist, 2),
-        "ssp585_unmitigated_peak_discharge_m3_per_s": round(peak_ssp585_unmitigated, 2),
-        "ssp585_detention_routed_peak_m3_per_s": round(peak_ssp585_routed, 2),
+        "synthetic_rainfall_stress_multiplier": 1.35,
+        "stress_scenario_unmitigated_peak_discharge_m3_per_s": round(peak_stress_unmitigated, 2),
+        "stress_scenario_detention_routed_peak_m3_per_s": round(peak_stress_routed, 2),
         "peak_flood_attenuation_pct": round(peak_attenuation_pct, 2),
         "max_detention_basin_depth_m": round(max_basin_depth, 3),
         "surrogate_nse_score": round(nse, 5),
@@ -417,7 +468,8 @@ def main() -> None:
 
     swe_res = run_saint_venant_dambreak_verification()
     gvf_res = run_manning_gvf_and_inverse_calibration()
-    climate_res = run_climate_flood_hydrograph_and_detention_optimizer()
+    convergence_res = run_grid_convergence_study()
+    scenario_res = run_synthetic_storm_and_detention_scenario()
 
     # Export Dam-Break profile CSV
     csv_path = data_dir / "saint_venant_dambreak_profile.csv"
@@ -439,8 +491,8 @@ def main() -> None:
         {
             "test_id": "HYD_02_STOKER_DAMBREAK_SHOCK_VERIFICATION",
             "description": "Saint-Venant FVM depth profile matches exact Stoker analytical shock/rarefaction solution within 2.5% L2 error",
-            "computed_value": f"L2_err={swe_res['l2_depth_error_vs_stoker_pct']:.3f}%, ShockSpeed={swe_res['stoker_shock_speed_m_per_s']} m/s",
-            "passed": swe_res["l2_depth_error_vs_stoker_pct"] < 2.5,
+            "computed_value": f"L2_err={swe_res['l2_depth_error_vs_stoker_pct']:.3f}%, measured shock error={swe_res['shock_speed_relative_error_pct']:.3f}%",
+            "passed": swe_res["l2_depth_error_vs_stoker_pct"] < 2.5 and swe_res["shock_speed_relative_error_pct"] < 2.0,
         },
         {
             "test_id": "HYD_03_MANNING_ROUGHNESS_INVERSE_CALIBRATION",
@@ -449,16 +501,19 @@ def main() -> None:
             "passed": gvf_res["manning_n_relative_error_pct"] < 0.5,
         },
         {
-            "test_id": "HYD_04_HYDROGRAPH_SURROGATE_NSE_KGE",
-            "description": "Physics-guided rainfall-runoff surrogate generalizes to unseen IPCC SSP5-8.5 extreme storm with NSE > 0.99 and KGE > 0.98",
-            "computed_value": f"NSE={climate_res['surrogate_nse_score']:.5f}, KGE={climate_res['surrogate_kge_score']:.5f}",
-            "passed": climate_res["surrogate_nse_score"] > 0.99 and climate_res["surrogate_kge_score"] > 0.98,
+            "test_id": "HYD_04_GRID_REFINEMENT",
+            "description": "Stoker depth-profile error decreases across 125, 250, and 500 cells",
+            "computed_value": " -> ".join(f"{row['l2_depth_error_pct']:.3f}%" for row in convergence_res),
+            "passed": all(
+                convergence_res[i + 1]["l2_depth_error_pct"] < convergence_res[i]["l2_depth_error_pct"]
+                for i in range(len(convergence_res) - 1)
+            ),
         },
         {
-            "test_id": "HYD_05_SSP585_DETENTION_PEAK_ATTENUATION",
-            "description": "Level-pool detention basin routing attenuates IPCC SSP5-8.5 extreme flood peak by > 35% without spillway failure",
-            "computed_value": f"Peak: {climate_res['ssp585_unmitigated_peak_discharge_m3_per_s']} -> {climate_res['ssp585_detention_routed_peak_m3_per_s']} m^3/s (-{climate_res['peak_flood_attenuation_pct']}%)",
-            "passed": climate_res["peak_flood_attenuation_pct"] > 35.0,
+            "test_id": "HYD_05_SYNTHETIC_DETENTION_SCENARIO",
+            "description": "Level-pool routing attenuates the explicitly synthetic 1.35x rainfall stress scenario by > 35%",
+            "computed_value": f"Peak: {scenario_res['stress_scenario_unmitigated_peak_discharge_m3_per_s']} -> {scenario_res['stress_scenario_detention_routed_peak_m3_per_s']} m^3/s (-{scenario_res['peak_flood_attenuation_pct']}%)",
+            "passed": scenario_res["peak_flood_attenuation_pct"] > 35.0,
         },
     ]
 
@@ -467,18 +522,18 @@ def main() -> None:
     }
 
     report = {
-        "project": "FloodSWE-1D: Saint-Venant Shallow-Water Solver, Manning Inverse Calibrator & IPCC SSP5-8.5 Flood Attenuation Optimizer",
+        "project": "FloodSWE-1D: Saint-Venant Solver, Manning Inverse Calibrator & Synthetic Detention Scenario",
         "course_grounding": [
             "CVL2702 (Hydraulics, IIT Delhi)",
             "CVL2001 (Climate Change and Adaptation, IIT Delhi)",
         ],
-        "paper_reproductions": [
-            "Toro, E. F. (2001), Shock-Capturing Methods for Free-Surface Shallow Flows (Stoker/Ritter Dam-Break FVM)",
-            "Kratzert, F., et al. (2018), Hydrol. Earth Syst. Sci. (HESS), 22, 6005-6022 (NSE/KGE Hydrograph Surrogate)",
+        "reference_grounding": [
+            "Toro, E. F. (2001), Shock-Capturing Methods for Free-Surface Shallow Flows",
         ],
         "saint_venant_dambreak": swe_summary,
+        "grid_convergence": convergence_res,
         "manning_gvf_calibration": gvf_res,
-        "climate_hydrograph_and_detention": climate_res,
+        "synthetic_storm_and_detention": scenario_res,
         "verification_tests": tests,
         "all_tests_passed": all(t["passed"] for t in tests),
     }
@@ -487,7 +542,7 @@ def main() -> None:
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     print("=" * 84)
-    print("FloodSWE-1D (CVL2702 + CVL2001) — Hydraulics & Climate Flood Verification Suite")
+    print("FloodSWE-1D — Hydraulics Benchmark and Synthetic Scenario Suite")
     print("=" * 84)
     for t in tests:
         status = "PASS" if t["passed"] else "FAIL"

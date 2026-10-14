@@ -1,27 +1,60 @@
 {
-  "project": "FloodSWE-1D: Saint-Venant Shallow-Water Solver, Manning Inverse Calibrator & IPCC SSP5-8.5 Flood Attenuation Optimizer",
+  "project": "FloodSWE-1D: Saint-Venant Solver, Manning Inverse Calibrator & Synthetic Detention Scenario",
   "course_grounding": [
     "CVL2702 (Hydraulics, IIT Delhi)",
     "CVL2001 (Climate Change and Adaptation, IIT Delhi)"
   ],
-  "paper_reproductions": [
-    "Toro, E. F. (2001), Shock-Capturing Methods for Free-Surface Shallow Flows (Stoker/Ritter Dam-Break FVM)",
-    "Kratzert, F., et al. (2018), Hydrol. Earth Syst. Sci. (HESS), 22, 6005-6022 (NSE/KGE Hydrograph Surrogate)"
+  "reference_grounding": [
+    "Toro, E. F. (2001), Shock-Capturing Methods for Free-Surface Shallow Flows"
   ],
   "saint_venant_dambreak": {
     "channel_length_m": 1000.0,
     "num_cells": 500,
     "dx_m": 2.0,
-    "dt_s": 0.15,
+    "dt_s": 0.007480252815408761,
+    "min_dt_s": 0.007480252815408761,
+    "max_dt_s": 0.1436739427831727,
+    "num_steps": 282,
+    "target_cfl": 0.45,
+    "minimum_depth_m": 0.4,
+    "net_boundary_volume_m3_per_m": 0.0,
+    "raw_volume_change_m3_per_m": -4.092726157978177e-12,
+    "exact_profile_valid_before_boundary_interaction": true,
+    "shock_diagnostic_applicable": true,
     "simulation_time_s": 30.0,
-    "max_cfl_number": 0.6417,
+    "max_cfl_number": 0.45,
     "initial_water_volume_m3_per_m": 2200.0,
     "final_water_volume_m3_per_m": 2200.0,
-    "volume_conservation_error_m3_per_m": 5.4569682106375694e-12,
+    "volume_conservation_error_m3_per_m": 4.092726157978177e-12,
     "stoker_star_depth_m": 1.5847,
     "stoker_shock_speed_m_per_s": 6.2103,
-    "l2_depth_error_vs_stoker_pct": 2.051
+    "numerical_shock_speed_m_per_s": 6.1333,
+    "shock_speed_relative_error_pct": 1.239,
+    "l2_depth_error_vs_stoker_pct": 2.053
   },
+  "grid_convergence": [
+    {
+      "num_cells": 125,
+      "dx_m": 8.0,
+      "l2_depth_error_pct": 4.615,
+      "shock_speed_relative_error_pct": 3.386,
+      "max_cfl_number": 0.45
+    },
+    {
+      "num_cells": 250,
+      "dx_m": 4.0,
+      "l2_depth_error_pct": 3.176,
+      "shock_speed_relative_error_pct": 1.239,
+      "max_cfl_number": 0.45
+    },
+    {
+      "num_cells": 500,
+      "dx_m": 2.0,
+      "l2_depth_error_pct": 2.053,
+      "shock_speed_relative_error_pct": 1.239,
+      "max_cfl_number": 0.45
+    }
+  ],
   "manning_gvf_calibration": {
     "channel_width_m": 8.0,
     "bed_slope": 0.0012,
@@ -30,14 +63,24 @@
     "calibrated_manning_n": 0.016,
     "manning_n_relative_error_pct": 0.002,
     "profile_rmse_mm": 0.017,
+    "profile_rmse_definition": "Error against synthetic true profile, not observation fit",
+    "observation_fit_rmse_mm": 1.9492815953549119,
     "upstream_depth_m": 2.0325,
     "downstream_depth_m": 2.6
   },
-  "climate_hydrograph_and_detention": {
+  "synthetic_storm_and_detention": {
     "catchment_area_km2": 18.5,
+    "routing_method": "Explicit midpoint RK2 with availability-limited outflow; not Modified Puls",
+    "routing_substeps": 12,
+    "initial_storage_m3": 42000.0,
+    "final_storage_m3": 1102874.6856234283,
+    "inflow_volume_m3": 5530692.662316724,
+    "outflow_volume_m3": 4469817.976693304,
+    "storage_balance_error_m3": 8.847564458847046e-09,
     "historical_peak_discharge_m3_per_s": 171.26,
-    "ssp585_unmitigated_peak_discharge_m3_per_s": 233.15,
-    "ssp585_detention_routed_peak_m3_per_s": 113.3,
+    "synthetic_rainfall_stress_multiplier": 1.35,
+    "stress_scenario_unmitigated_peak_discharge_m3_per_s": 233.15,
+    "stress_scenario_detention_routed_peak_m3_per_s": 113.3,
     "peak_flood_attenuation_pct": 51.4,
     "max_detention_basin_depth_m": 6.017,
     "surrogate_nse_score": 0.9996,
@@ -47,13 +90,13 @@
     {
       "test_id": "HYD_01_SWE_VOLUME_CONSERVATION",
       "description": "1D Saint-Venant Rusanov FVM solver strictly conserves water volume (< 1e-9 m^3/m error)",
-      "computed_value": "Error=5.457e-12 m^3/m (CFL=0.6417)",
+      "computed_value": "Error=4.093e-12 m^3/m (CFL=0.45)",
       "passed": true
     },
     {
       "test_id": "HYD_02_STOKER_DAMBREAK_SHOCK_VERIFICATION",
       "description": "Saint-Venant FVM depth profile matches exact Stoker analytical shock/rarefaction solution within 2.5% L2 error",
-      "computed_value": "L2_err=2.051%, ShockSpeed=6.2103 m/s",
+      "computed_value": "L2_err=2.053%, measured shock error=1.239%",
       "passed": true
     },
     {
@@ -63,14 +106,14 @@
       "passed": true
     },
     {
-      "test_id": "HYD_04_HYDROGRAPH_SURROGATE_NSE_KGE",
-      "description": "Physics-guided rainfall-runoff surrogate generalizes to unseen IPCC SSP5-8.5 extreme storm with NSE > 0.99 and KGE > 0.98",
-      "computed_value": "NSE=0.99960, KGE=0.98607",
+      "test_id": "HYD_04_GRID_REFINEMENT",
+      "description": "Stoker depth-profile error decreases across 125, 250, and 500 cells",
+      "computed_value": "4.615% -> 3.176% -> 2.053%",
       "passed": true
     },
     {
-      "test_id": "HYD_05_SSP585_DETENTION_PEAK_ATTENUATION",
-      "description": "Level-pool detention basin routing attenuates IPCC SSP5-8.5 extreme flood peak by > 35% without spillway failure",
+      "test_id": "HYD_05_SYNTHETIC_DETENTION_SCENARIO",
+      "description": "Level-pool routing attenuates the explicitly synthetic 1.35x rainfall stress scenario by > 35%",
       "computed_value": "Peak: 233.15 -> 113.3 m^3/s (-51.4%)",
       "passed": true
     }

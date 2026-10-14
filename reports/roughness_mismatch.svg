@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="550" viewBox="0 0 900 550"><rect width="900" height="550" fill="white"/><g font-family="Arial,sans-serif" font-size="14" fill="#172b4d">
+<text x="450" y="30" text-anchor="middle" font-size="20">Synthetic roughness error: 10% slope mismatch</text>
+<path d="M90 430 H840" stroke="#dde2e8"/>
+<text x="78" y="435" text-anchor="end">0</text>
+<text x="90" y="455" text-anchor="middle">0</text>
+<path d="M90 362 H840" stroke="#dde2e8"/>
+<text x="78" y="367" text-anchor="end">2.63</text>
+<text x="240" y="455" text-anchor="middle">2</text>
+<path d="M90 294 H840" stroke="#dde2e8"/>
+<text x="78" y="299" text-anchor="end">5.25</text>
+<text x="390" y="455" text-anchor="middle">4</text>
+<path d="M90 226 H840" stroke="#dde2e8"/>
+<text x="78" y="231" text-anchor="end">7.88</text>
+<text x="540" y="455" text-anchor="middle">6</text>
+<path d="M90 158 H840" stroke="#dde2e8"/>
+<text x="78" y="163" text-anchor="end">10.5</text>
+<text x="690" y="455" text-anchor="middle">8</text>
+<path d="M90 90 H840" stroke="#dde2e8"/>
+<text x="78" y="95" text-anchor="end">13.1</text>
+<text x="840" y="455" text-anchor="middle">10</text>
+<path d="M90 90 V430 H840" fill="none" stroke="#172b4d"/>
+<polyline points="90.00,269.61 240.00,269.34 840.00,268.27" stroke="#1768ac" stroke-width="2" fill="none"/>
+<circle cx="90.00" cy="269.61" r="3" fill="#1768ac"/>
+<circle cx="240.00" cy="269.34" r="3" fill="#1768ac"/>
+<circle cx="840.00" cy="268.27" r="3" fill="#1768ac"/>
+<text x="100" y="65" fill="#1768ac">distributed, slope 1.1x</text>
+<polyline points="90.00,147.01 240.00,142.27 840.00,115.19" stroke="#c44536" stroke-width="2" fill="none"/>
+<circle cx="90.00" cy="147.01" r="3" fill="#c44536"/>
+<circle cx="240.00" cy="142.27" r="3" fill="#c44536"/>
+<circle cx="840.00" cy="115.19" r="3" fill="#c44536"/>
+<text x="340" y="65" fill="#c44536">near_boundary, slope 1.1x</text>
+<text x="450" y="495" text-anchor="middle">Observation noise standard deviation (mm)</text>
+<text transform="translate(20,270) rotate(-90)" text-anchor="middle">Mean absolute roughness error (%)</text>
+<text x="450" y="530" text-anchor="middle" fill="#555">Reproducible numerical evidence; not field-performance validation</text></g></svg>
